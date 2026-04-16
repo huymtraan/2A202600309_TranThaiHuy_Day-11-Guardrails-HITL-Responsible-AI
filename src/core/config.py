@@ -2,10 +2,22 @@
 Lab 11 — Configuration & API Key Setup
 """
 import os
+from pathlib import Path
 
 
 def setup_api_key():
-    """Load Google API key from environment or prompt."""
+    """Load Google API key from environment, .env, or prompt."""
+    if "GOOGLE_API_KEY" not in os.environ:
+        try:
+            from dotenv import load_dotenv
+            env_path = Path(".env")
+            if env_path.exists():
+                load_dotenv(dotenv_path=env_path)
+            else:
+                load_dotenv()
+        except Exception:
+            pass
+
     if "GOOGLE_API_KEY" not in os.environ:
         os.environ["GOOGLE_API_KEY"] = input("Enter Google API Key: ")
     os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "0"

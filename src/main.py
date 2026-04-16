@@ -8,10 +8,12 @@ Usage:
     python main.py --part 2     # Run only Part 2 (guardrails)
     python main.py --part 3     # Run only Part 3 (testing pipeline)
     python main.py --part 4     # Run only Part 4 (HITL design)
+    python main.py --assignment # Run Assignment 11 pipeline (OpenAI)
 """
 import sys
 import asyncio
 import argparse
+import os
 
 from core.config import setup_api_key
 
@@ -67,6 +69,10 @@ async def part2_guardrails():
 
     # Part 2C: NeMo Guardrails
     print("\n--- Part 2C: NeMo Guardrails ---")
+    if "GOOGLE_API_KEY" not in os.environ:
+        print("GOOGLE_API_KEY not set. Skipping NeMo Guardrails test (Part 2C).")
+        print("Tip: set GOOGLE_API_KEY or create a .env file from .env.example.")
+        return
     try:
         from guardrails.nemo_guardrails import init_nemo, test_nemo_guardrails
         init_nemo()
@@ -128,10 +134,13 @@ async def main(parts=None):
     Args:
         parts: List of part numbers to run, or None for all
     """
-    setup_api_key()
-
     if parts is None:
         parts = [1, 2, 3, 4]
+
+    # Parts 1 & 3 require LLM access. Part 2 can run its local tests without a key.
+    # (NeMo/Judge pieces inside Part 2 will self-skip if a key is missing.)
+    if any(part in (1, 3) for part in parts):
+        setup_api_key()
 
     for part in parts:
         if part == 1:
@@ -158,9 +167,18 @@ if __name__ == "__main__":
         "--part", type=int, choices=[1, 2, 3, 4],
         help="Run only a specific part (1-4). Default: run all.",
     )
+    parser.add_argument(
+        "--assignment",
+        action="store_true",
+        help="Run Assignment 11 defense-in-depth pipeline (OpenAI backend).",
+    )
     args = parser.parse_args()
 
-    if args.part:
+    if args.assignment:
+        from assignment11_main import main as assignment_main
+
+        asyncio.run(assignment_main())
+    elif args.part:
         asyncio.run(main(parts=[args.part]))
     else:
         asyncio.run(main())

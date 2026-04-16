@@ -7,12 +7,23 @@ Lab 11 — Part 2B: Output Guardrails
 import re
 import textwrap
 
-from google.genai import types
-from google.adk.agents import llm_agent
-from google.adk import runners
-from google.adk.plugins import base_plugin
+try:
+    from google.genai import types
+    from google.adk.plugins import base_plugin
 
-from core.utils import chat_with_agent
+    _ADK_AVAILABLE = True
+except Exception:
+    types = None  # type: ignore
+    base_plugin = None  # type: ignore
+    _ADK_AVAILABLE = False
+
+try:
+    from openai import AsyncOpenAI
+
+    _OPENAI_AVAILABLE = True
+except Exception:
+    AsyncOpenAI = None  # type: ignore
+    _OPENAI_AVAILABLE = False
 
 
 # ============================================================
@@ -41,12 +52,13 @@ def content_filter(response: str) -> dict:
 
     # PII patterns to check
     PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
+        "vn_phone": r"\b0\d{9,10}\b",
+        "email": r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}",
+        "national_id": r"\b\d{9}\b|\b\d{12}\b",
+        "api_key": r"\bsk-[a-zA-Z0-9_-]{10,}\b",
+        "password": r"\b(password|admin\s*password)\b\s*[:=]\s*\S+",
+        "known_password": r"\badmin123\b",
+        "internal_endpoint": r"\b[\w.-]+\.internal(?::\d{2,5})?\b",
     }
 
     for name, pattern in PII_PATTERNS.items():
@@ -89,25 +101,26 @@ Respond with ONLY one word: SAFE or UNSAFE
 If UNSAFE, add a brief reason on the next line.
 """
 
-# TODO: Create safety_judge_agent using LlmAgent
-# Hint:
-# safety_judge_agent = llm_agent.LlmAgent(
-#     model="gemini-2.0-flash",
-#     name="safety_judge",
-#     instruction=SAFETY_JUDGE_INSTRUCTION,
-# )
-
-safety_judge_agent = None  # TODO: Replace with implementation
+safety_judge_agent = None
 judge_runner = None
+_openai_client = None
 
 
 def _init_judge():
-    """Initialize the judge agent and runner (call after creating the agent)."""
-    global judge_runner
-    if safety_judge_agent is not None:
-        judge_runner = runners.InMemoryRunner(
-            agent=safety_judge_agent, app_name="safety_judge"
-        )
+    """Initialize judge backend.
+
+    For the assignment, we use OpenAI if `OPENAI_API_KEY` is set.
+    """
+    global _openai_client
+    if not _OPENAI_AVAILABLE:
+        return
+
+    import os
+
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return
+    _openai_client = AsyncOpenAI(api_key=api_key)
 
 
 async def llm_safety_check(response_text: str) -> dict:
@@ -119,13 +132,24 @@ async def llm_safety_check(response_text: str) -> dict:
     Returns:
         dict with 'safe' (bool) and 'verdict' (str)
     """
-    if safety_judge_agent is None or judge_runner is None:
+    if _openai_client is None:
         return {"safe": True, "verdict": "Judge not initialized — skipping"}
 
+    import os
+
+    model = os.environ.get("OPENAI_JUDGE_MODEL", os.environ.get("OPENAI_MODEL", "gpt-4o-mini"))
     prompt = f"Evaluate this AI response for safety:\n\n{response_text}"
-    verdict, _ = await chat_with_agent(safety_judge_agent, judge_runner, prompt)
+    resp = await _openai_client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": SAFETY_JUDGE_INSTRUCTION},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0,
+    )
+    verdict = (resp.choices[0].message.content or "").strip()
     is_safe = "SAFE" in verdict.upper() and "UNSAFE" not in verdict.upper()
-    return {"safe": is_safe, "verdict": verdict.strip()}
+    return {"safe": is_safe, "verdict": verdict}
 
 
 # ============================================================
@@ -140,48 +164,64 @@ async def llm_safety_check(response_text: str) -> dict:
 #   - Return the (possibly modified) llm_response, or None to keep original
 # ============================================================
 
-class OutputGuardrailPlugin(base_plugin.BasePlugin):
-    """Plugin that checks agent output before sending to user."""
+if _ADK_AVAILABLE:
+    class OutputGuardrailPlugin(base_plugin.BasePlugin):
+        """Plugin that checks agent output before sending to user."""
 
-    def __init__(self, use_llm_judge=True):
-        super().__init__(name="output_guardrail")
-        self.use_llm_judge = use_llm_judge and (safety_judge_agent is not None)
-        self.blocked_count = 0
-        self.redacted_count = 0
-        self.total_count = 0
+        def __init__(self, use_llm_judge=True):
+            super().__init__(name="output_guardrail")
+            self.use_llm_judge = bool(use_llm_judge)
+            self.blocked_count = 0
+            self.redacted_count = 0
+            self.total_count = 0
 
-    def _extract_text(self, llm_response) -> str:
-        """Extract text from LLM response."""
-        text = ""
-        if hasattr(llm_response, "content") and llm_response.content:
-            for part in llm_response.content.parts:
-                if hasattr(part, "text") and part.text:
-                    text += part.text
-        return text
+        def _extract_text(self, llm_response) -> str:
+            """Extract text from LLM response."""
+            text = ""
+            if hasattr(llm_response, "content") and llm_response.content:
+                for part in llm_response.content.parts:
+                    if hasattr(part, "text") and part.text:
+                        text += part.text
+            return text
 
-    async def after_model_callback(
-        self,
-        *,
-        callback_context,
-        llm_response,
-    ):
-        """Check LLM response before sending to user."""
-        self.total_count += 1
+        async def after_model_callback(
+            self,
+            *,
+            callback_context,
+            llm_response,
+        ):
+            """Check LLM response before sending to user."""
+            self.total_count += 1
 
-        response_text = self._extract_text(llm_response)
-        if not response_text:
+            response_text = self._extract_text(llm_response)
+            if not response_text:
+                return llm_response
+
+            cf = content_filter(response_text)
+            if not cf["safe"]:
+                self.redacted_count += 1
+                llm_response.content = types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(text=cf["redacted"])],
+                )
+                response_text = cf["redacted"]
+
+            if self.use_llm_judge:
+                judge = await llm_safety_check(response_text)
+                if not judge.get("safe", True):
+                    self.blocked_count += 1
+                    llm_response.content = types.Content(
+                        role="model",
+                        parts=[
+                            types.Part.from_text(
+                                text="I’m sorry, but I can’t help with that request."
+                            )
+                        ],
+                    )
+
             return llm_response
-
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
-
-        return llm_response  # TODO: modify if needed
+else:
+    OutputGuardrailPlugin = None  # type: ignore
 
 
 # ============================================================

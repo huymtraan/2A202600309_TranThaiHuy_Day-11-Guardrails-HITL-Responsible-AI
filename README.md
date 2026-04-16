@@ -51,19 +51,23 @@ Day-11-Guardrails-HITL-Responsible-AI/
 ### Local (Notebook)
 
 ```bash
-pip install -r requirements.txt
-export GOOGLE_API_KEY="your-api-key-here"
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+export GOOGLE_API_KEY="your-api-key-here"   # or create a .env file (see .env.example)
 jupyter notebook notebooks/lab11_guardrails_hitl.ipynb
 ```
 
 ### Local (Python modules — no Colab needed)
 
 ```bash
-cd src/
-pip install -r ../requirements.txt
-export GOOGLE_API_KEY="your-api-key-here"
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+export GOOGLE_API_KEY="your-api-key-here"   # or create a .env file (see .env.example)
 
 # Run the full lab
+cd src/
 python main.py
 
 # Or run specific parts
@@ -128,4 +132,3 @@ python hitl/hitl.py
 - [AI Safety Fundamentals](https://aisafetyfundamentals.com/)
 - [AI Red Teaming Guide](https://github.com/requie/AI-Red-Teaming-Guide)
 - [antoan.ai - AI Safety Vietnam](https://antoan.ai)
-
